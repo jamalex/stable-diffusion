@@ -14,22 +14,12 @@ from pytorch_lightning import seed_everything
 from torch import autocast
 from contextlib import contextmanager, nullcontext
 
-import accelerate
 import k_diffusion as K
 import torch.nn as nn
 
-from ldm.util import instantiate_from_config
+from ldm.util                  import instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
-
-from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
-from transformers import AutoFeatureExtractor
-
-
-# load safety model
-safety_model_id = "CompVis/stable-diffusion-safety-checker"
-safety_feature_extractor = AutoFeatureExtractor.from_pretrained(safety_model_id)
-safety_checker = StableDiffusionSafetyChecker.from_pretrained(safety_model_id)
 
 
 def chunk(it, size):
@@ -64,7 +54,7 @@ def load_model_from_config(config, ckpt, verbose=False):
         print("unexpected keys:")
         print(u)
 
-    model.cuda()
+    model.to(choose_torch_device())
     model.eval()
     return model
 
@@ -243,18 +233,17 @@ def main():
         opt.ckpt = "models/ldm/text2img-large/model.ckpt"
         opt.outdir = "outputs/txt2img-samples-laion400m"
 
-    seed_everything(opt.seed)
 
     config = OmegaConf.load(f"{opt.config}")
     model = load_model_from_config(config, f"{opt.ckpt}")
 
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    model = model.to(device)
+    seed_everything(opt.seed)
+
+    device = torch.device(choose_torch_device())
+    model  = model.to(device)
 
     #for klms
     model_wrap = K.external.CompVisDenoiser(model)
-    accelerator = accelerate.Accelerator()
-    device = accelerator.device
     class CFGDenoiser(nn.Module):
         def __init__(self, model):
             super().__init__()
@@ -300,16 +289,22 @@ def main():
 
     start_code = None
     if opt.fixed_code:
-        start_code = torch.randn([opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f], device=device)
+        shape = [opt.n_samples, opt.C, opt.H // opt.f, opt.W // opt.f]
+        if device.type == 'mps':
+            start_code = torch.randn(shape, device='cpu').to(device)
+        else:
+            torch.randn(shape, device=device)
 
     precision_scope = autocast if opt.precision=="autocast" else nullcontext
+    if device.type in ['mps', 'cpu']:
+        precision_scope = nullcontext # have to use f32 on mps
     with torch.no_grad():
-        with precision_scope("cuda"):
+        with precision_scope(device.type):
             with model.ema_scope():
                 tic = time.time()
                 all_samples = list()
-                for n in trange(opt.n_iter, desc="Sampling", disable =not accelerator.is_main_process):
-                    for prompts in tqdm(data, desc="data", disable =not accelerator.is_main_process):
+                for n in trange(opt.n_iter, desc="Sampling"):
+                    for prompts in tqdm(data, desc="data"):
                         uc = None
                         if opt.scale != 1.0:
                             uc = model.get_learned_conditioning(batch_size * [""])
@@ -336,13 +331,10 @@ def main():
                                 x = torch.randn([opt.n_samples, *shape], device=device) * sigmas[0] # for GPU draw
                             model_wrap_cfg = CFGDenoiser(model_wrap)
                             extra_args = {'cond': c, 'uncond': uc, 'cond_scale': opt.scale}
-                            samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args=extra_args, disable=not accelerator.is_main_process)
+                            samples_ddim = K.sampling.sample_lms(model_wrap_cfg, x, sigmas, extra_args=extra_args)
                         
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                        
-                        if opt.klms:
-                            x_sample = accelerator.gather(x_samples_ddim)
 
                         if not opt.skip_save:
                             for x_sample in x_checked_image_torch:
