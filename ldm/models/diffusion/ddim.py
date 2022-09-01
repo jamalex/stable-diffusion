@@ -144,7 +144,7 @@ class DDIMSampler(object):
 
             if mask is not None:
                 assert x0 is not None
-                img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
+                img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?                
                 img = img_orig * mask + (1. - mask) * img
 
             outs = self.p_sample_ddim(img, cond, ts, index=index, use_original_steps=ddim_use_original_steps,
@@ -202,6 +202,7 @@ class DDIMSampler(object):
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
+        
         return x_prev, pred_x0
 
     @torch.no_grad()
@@ -222,7 +223,7 @@ class DDIMSampler(object):
 
     @torch.no_grad()
     def decode(self, x_latent, cond, t_start, unconditional_guidance_scale=1.0, unconditional_conditioning=None,
-               use_original_steps=False):
+               use_original_steps=False, img_callback=None, x0=None, mask=None):
 
         timesteps = np.arange(self.ddpm_num_timesteps) if use_original_steps else self.ddim_timesteps
         timesteps = timesteps[:t_start]
@@ -233,10 +234,25 @@ class DDIMSampler(object):
 
         iterator = tqdm(time_range, desc='Decoding image', total=total_steps)
         x_dec = x_latent
+        if img_callback:
+            img_callback(x_dec, 0)
         for i, step in enumerate(iterator):
             index = total_steps - i - 1
+
             ts = torch.full((x_latent.shape[0],), step, device=x_latent.device, dtype=torch.long)
+            
+            if mask is not None:
+                import os
+                if os.environ.get("DEBUG", False):
+                    import ipdb; ipdb.set_trace()
+                assert x0 is not None
+                # img_orig = self.model.q_sample(x0, ts)  # TODO: deterministic forward pass?
+                img_orig = self.stochastic_encode(x0, torch.tensor([t_start - i]*x_latent.shape[0]).to(self.device))
+                x_dec = img_orig * mask + (1. - mask) * x_dec
+
             x_dec, _ = self.p_sample_ddim(x_dec, cond, ts, index=index, use_original_steps=use_original_steps,
                                           unconditional_guidance_scale=unconditional_guidance_scale,
                                           unconditional_conditioning=unconditional_conditioning)
+            if img_callback:
+                img_callback(x_dec, i + 1)
         return x_dec

@@ -3,6 +3,7 @@ import k_diffusion as K
 import torch
 import torch.nn as nn
 import accelerate
+from tqdm import tqdm
 
 class CFGDenoiser(nn.Module):
     def __init__(self, model):
@@ -67,8 +68,12 @@ class KSampler(object):
             x = torch.randn([batch_size, *shape], device=self.device) * sigmas[0] # for GPU draw
         model_wrap_cfg = CFGDenoiser(self.model)
         extra_args = {'cond': conditioning, 'uncond': unconditional_conditioning, 'cond_scale': unconditional_guidance_scale}
-        return (K.sampling.__dict__[f'sample_{self.schedule}'](model_wrap_cfg, x, sigmas, extra_args=extra_args, disable=not self.accelerator.is_main_process),
-                None)
+        with tqdm(total=S, desc='K sampler with ' + self.schedule) as pbar:
+            def proxy_callback(data):
+                pbar.update(data['i'])
+                if img_callback:
+                    img_callback(data['denoised'], data['i'])
+            return (K.sampling.__dict__[f'sample_{self.schedule}'](model_wrap_cfg, x, sigmas, callback=proxy_callback, extra_args=extra_args, disable=not self.accelerator.is_main_process), None)
 
-    def gather(samples_ddim):
+    def gather(self, samples_ddim):
         return self.accelerator.gather(samples_ddim)

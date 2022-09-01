@@ -172,4 +172,11 @@ cython_debug/
 src
 logs/
 **/__pycache__/
-outputs
+outputs/
+projects/
+animations/
+*.mp4
+.envrc
+*.avi
+*.ckpt
+*.code-workspace
