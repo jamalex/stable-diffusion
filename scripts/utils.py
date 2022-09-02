@@ -1,3 +1,4 @@
+import logging
 import argparse, os, sys, glob
 import cv2
 import functools
@@ -10,6 +11,7 @@ from imwatermark import WatermarkEncoder
 from itertools import islice
 from einops import rearrange
 from torchvision.utils import make_grid
+import transformers
 import time
 from pytorch_lightning import seed_everything
 from torch import autocast
@@ -26,6 +28,7 @@ CURRENT_MODEL = None
 
 CLIP_TOKEN_NORM = torch.tensor([[[43.8203]] + [[28]] * 76])
 
+transformers.logging.set_verbosity_error()
 
 def get_neighbors_and_weight(index_dict, position):
     """

@@ -195,6 +195,7 @@ class SDImageList(list):
         # save array to output file
         skvideo.io.vwrite(filename, image_array, outputdict={
             "-r": str(fps),
+            "-framerate": str(fps),
             "-c:v": "libx264",
             "-profile:v": "baseline",
             "-level": "3.0",
